@@ -1790,7 +1790,7 @@ unmount_all() {
   unmount_errors=0
 
   while read line ; do
-    device="$(echo "$line" | grep -v "^/dev/loop" | grep -v "^/dev/root" | grep "^/" | grep -v '^//.* cifs .*' | awk '{ print $1 }')"
+    device="$(echo "$line" | grep -v "^/dev/loop" | grep -v "^/dev/root" | grep "^/" | grep -v '^//.* cifs .*' | grep -v "archiso" | awk '{ print $1 }')"
     if [ "$device" ] ; then
       unmount_output="$unmount_output\n$(umount $device 2>&1)"; EXITCODE=$?
       unmount_errors=$[$unmount_errors + $EXITCODE]
