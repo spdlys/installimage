@@ -3850,7 +3850,6 @@ exit_function() {
   echo "  https://robot.hetzner.com/"
   echo
 
-  report_install
 }
 
 #function to check if it is a intel or amd cpu
