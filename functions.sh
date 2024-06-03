@@ -3,7 +3,7 @@
 #
 # functions
 #
-# (c) 2007-2022, Hetzner Online GmbH
+# (c) 2007-2024, Hetzner Online GmbH
 #
 
 
@@ -179,9 +179,8 @@ generate_menu() {
   case $IMAGENAME in
     Proxmox-Virtualization-Environment*)
       case "$IMAGENAME" in
+        Proxmox-Virtualization-Environment-on-Debian-Bookworm) export PROXMOX_VERSION="8" ;;
         Proxmox-Virtualization-Environment-on-Debian-Bullseye) export PROXMOX_VERSION="7" ;;
-        Proxmox-Virtualization-Environment-on-Debian-Buster) export PROXMOX_VERSION="6" ;;
-        Proxmox-Virtualization-Environment-on-Debian-Stretch) export PROXMOX_VERSION="5" ;;
       esac
       cp "$SCRIPTPATH/post-install/proxmox$PROXMOX_VERSION" /post-install
       chmod 0755 /post-install
@@ -551,7 +550,7 @@ create_config() {
     local LIMIT=2096128
     local THREE_TB=2861588
     local DRIVE_SIZE; DRIVE_SIZE="$(sfdisk -s "$(smallest_hd)" 2>/dev/null)"
-    DRIVE_SIZE="$(echo "$DRIVE_SIZE" / 1024 | bc)"
+    DRIVE_SIZE="$(echo "$DRIVE_SIZE" / 1024 | bc)" # MiB
 
     # adjust swap dynamically according to RAM
     # RAM < 2 GB : SWAP=2 * RAM
@@ -568,6 +567,12 @@ create_config() {
       SWAPSIZE=$((RAM / 1024 + 1))
     elif [ "$RAM" -lt 65535 ]; then
       SWAPSIZE=$((RAM / 2 / 1024 + 1))
+    fi
+
+    # revert swap size to 4G if swap wouldnt fit into smallest disk
+    DRIVE_SIZE_GIB=$((DRIVE_SIZE / 1024))
+    if (( SWAPSIZE >= DRIVE_SIZE_GIB )); then
+      SWAPSIZE=4
     fi
 
     ESPPART='PART /boot/efi esp 256M\n'
@@ -811,7 +816,7 @@ if [ -n "$1" ]; then
   done < /tmp/part_lines.tmp
 
   # get encryption password
-  CRYPTPASSWORD="$(grep -e '^CRYPTPASSWORD ' "$1")"
+  CRYPTPASSWORD="$(grep -m 1 '^CRYPTPASSWORD ' "$1" | cut -d ' ' -f 2- | sed -z 's/\n$//')"
 
   # get LVM volume group config
   LVM_VG_COUNT="$(egrep -c '^PART *lvm ' "$1")"
@@ -958,6 +963,11 @@ if [ -n "$1" ]; then
   fi
   # keep dell_r6415 default
   (( use_kernel_mode_setting_given == 0 )) && is_dell_r6415 && USE_KERNEL_MODE_SETTING=1
+
+  # set n to disable kms
+  if [[ "$(tac "$1" | grep -m1 ^USE_KERNEL_MODE_SETTING | awk '{print $2}')" =~ ^n ]]; then
+    export USE_KERNEL_MODE_SETTING=0
+  fi
 fi
 
   :
@@ -1632,7 +1642,7 @@ validate_vars() {
   fi
 
   if is_cpanel_install; then
-    if [ "$IAM" != "centos" -a "$IAM" != "almalinux" ]; then
+    if [ "$IAM" != "centos" -a "$IAM" != "almalinux" -a "$IAM" != "ubuntu" ]; then
       graph_error "ERROR: CPANEL is not available for this image"
       return 1
     fi
@@ -2196,8 +2206,11 @@ make_fstab_entry() {
   if grep -q '^/dev/disk/by-' <<< "$1"; then
     p='-part'
   else
-    p="$(echo $1 | grep nvme)"
-    [ -n "$p" ] && p='p'
+    local p; p=""
+    local nvme; nvme="$(echo $1 | grep nvme)"
+    [ -n "$nvme" ] && p='p'
+    local disk_by; disk_by="$(echo $1 | grep '^/dev/disk/by-')"
+    [ -n "$disk_by" ] && p='-part'
   fi
 
   if [ "$4" = "swap" ] ; then
@@ -2211,11 +2224,7 @@ make_fstab_entry() {
   elif [[ "$3" =~ ^btrfs\.[0-9A-Za-z]+ ]] ; then
     ENTRY="# $1$p$2  belongs to btrfs volume '$3'"
   else
-    if [ "$SYSTYPE" = "vServer" -a "$4" = 'ext4' ]; then
-      ENTRY="$1$p$2 $3 $4 defaults,discard 0 0"
-    else
-      ENTRY="$1$p$2 $3 $4 defaults 0 0"
-    fi
+    ENTRY="$1$p$2 $3 $4 defaults 0 0"
   fi
 
   if [ "$5" = "crypt" ]; then
@@ -2323,10 +2332,10 @@ make_swraid() {
         continue
       elif [ -n "$(echo "$line" | grep "/boot")" -a  "$metadata_boot" == "--metadata=0.90" ] || [ "$metadata" == "--metadata=0.90" ]; then
         # update fstab - replace /dev/sdaX with /dev/mdY
-        echo $line | sed "s/$SEDHDD\(p\)\?[0-9]\+/\/dev\/md$md_count/g" >> $fstab
+        echo $line | sed "s/$SEDHDD\(p\|-part\)\?[0-9]\+/\/dev\/md$md_count/g" >> $fstab
       else
         # update fstab - replace /dev/sdaX with /dev/md/Y
-        echo $line | sed "s/$SEDHDD\(p\)\?[0-9]\+/\/dev\/md\/$md_count/g" >> $fstab
+        echo $line | sed "s/$SEDHDD\(p\|-part\)\?[0-9]\+/\/dev\/md\/$md_count/g" >> $fstab
       fi
 
       # create raid array
@@ -2337,8 +2346,12 @@ make_swraid() {
         local n=0
         for n in $(seq 1 $COUNT_DRIVES) ; do
           TARGETDISK="$(eval echo \$DRIVE${n})"
-          local p="$(echo $TARGETDISK | grep nvme)"
-          [ -n "$p" ] && p='p'
+          local p; p=""
+          local nvme; nvme="$(echo $TARGETDISK | grep nvme)"
+          [ -n "$nvme" ] && p='p'
+          local disk_by; disk_by="$(echo $TARGETDISK | grep '^/dev/disk/by-')"
+          [ -n "$disk_by" ] && p='-part'
+
           components="$components $TARGETDISK$p$PARTNUM"
         done
 
@@ -2390,8 +2403,11 @@ make_lvm() {
   if [ -n "$1" ] ; then
     local fstab=$1
     local disk=$DRIVE1
-    local p; p="$(echo "$disk" | grep nvme)"
-    [ -n "$p" ] && p='p'
+    local p; p=""
+    local nvme; nvme="$(echo $TARGETDISK | grep nvme)"
+    [ -n "$nvme" ] && p='p'
+    local disk_by; disk_by="$(echo $TARGETDISK | grep '^/dev/disk/by-')"
+    [ -n "$disk_by" ] && p='-part'
 
     # TODO: needs to be removed
     # get device names for PVs depending if we use swraid or not
@@ -2421,7 +2437,7 @@ make_lvm() {
     # remove all Physical Volumes
     debug "# Removing all Physical Volumes"
     while read -r pv vg; do
-      if [[ "$vg" =~ $PRESERVE_VG ]]; then
+      if [[ -n "$PRESERVE_VG" ]] && [[ "$vg" =~ $PRESERVE_VG ]]; then
         debug "Not removing VG $vg"
       else
         pvremove -ff "$pv" 2>&1 | debugoutput
@@ -2587,7 +2603,7 @@ format_partitions() {
 encrypt_partitions() {
   if [ "$1" -a "$2" ]; then
     local fstab="$1"
-    local cryptpassword="$(echo "$2" | awk '{print $2}')"
+    local cryptpassword="$2"
     local dev
     local dev_uuid
 
@@ -2600,9 +2616,9 @@ encrypt_partitions() {
         else
           dev="$(echo "$line" | grep "crypted" | awk '{print $1}')"
         fi
-        echo -n "${cryptpassword}" | cryptsetup --cipher aes-xts-plain64 --key-size 256 --hash sha256 --iter-time 6000 --batch-mode luksFormat "$dev" -
+        cryptsetup --cipher aes-xts-plain64 --key-size 256 --hash sha256 --iter-time 6000 --batch-mode luksFormat "$dev" <<< "$cryptpassword"
         dev_uuid=$(blkid $dev -o value -s UUID)
-        echo -n "${cryptpassword}" | cryptsetup --batch-mode luksOpen "$dev" "luks-${dev_uuid}" -
+        cryptsetup --batch-mode luksOpen "$dev" "luks-${dev_uuid}" <<< "$cryptpassword"
         touch "$FOLD/crypttab"
         echo "luks-${dev_uuid} UUID=${dev_uuid} none luks" >> "$FOLD/crypttab"
         sed -i -e "s+$dev+/dev/mapper/luks-${dev_uuid}+g" "$FOLD/fstab"
@@ -3980,8 +3996,13 @@ function hdinfo() {
     *)
       local smartctl_json model_name serial_number
       if ! smartctl_json="$(smartctl -i -j "$dev" 2> /dev/null)"; then
-        echo '# unknown'
-        return
+        if is_usb_disk "$dev"; then
+          echo '# USB disk'
+          return
+        else
+          echo '# unknown'
+          return
+        fi
       fi
       model_name="$(jq -r '.model_name // empty' <<< "$smartctl_json" 2> /dev/null)" || :
       serial_number="$(disk_serial "$dev")" || :
@@ -4160,6 +4181,37 @@ is_usb_disk() {
   echo "$udevadm_info" | grep --quiet 'DEVTYPE=disk' || return 1
   echo "$udevadm_info" | grep --quiet 'ID_BUS=usb' || return 1
   echo "$udevadm_info" | grep --quiet 'ID_USB_DRIVER=usb-storage'
+}
+
+free_port_53() {
+  systemctl -q is-active systemd-resolved || return
+
+  debug '# stopping rescue system systemd-resolved'
+
+  systemctl stop systemd-resolved || return 1
+
+  debug '# updating /etc/resolv.conf'
+
+  if [[ -L /etc/resolv.conf ]]; then
+    mv -v /etc/resolv.con{f,f.bak} | debugoutput
+  else
+    cp -v /etc/resolv.con{f,f.bak} | debugoutput
+  fi
+
+  {
+    while read nsaddr; do
+      echo "nameserver $nsaddr"
+    done < <(randomized_nsaddrs)
+  } > /etc/resolv.conf
+
+  diff -Naur /etc/resolv.con{f.bak,f} | debugoutput
+
+  debug '# updating /run/systemd/resolve/stub-resolv.conf'
+
+  cp /run/systemd/resolve/stub-resolv.con{f,f.bak}
+  cp /etc/resolv.conf /run/systemd/resolve/stub-resolv.conf
+
+  diff -Naur /run/systemd/resolve/stub-resolv.con{f.bak,f} | debugoutput
 }
 
 # vim: ai:ts=2:sw=2:et

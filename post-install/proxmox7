@@ -18,7 +18,7 @@ chmod a+rwxt /run/lock
 apt update >/dev/null
 apt upgrade -y
 
-#echo -e "\n----------------- Deinstalling any linux firmware packages ------------------\n"
+echo -e "\n----------------- Deinstalling any linux firmware packages ------------------\n"
 
 firmware="$(dpkg -l | grep -i 'firmware-')"
 
@@ -27,10 +27,6 @@ if [ -n "$firmware" ]; then
 else
   echo "no firmware packages installed"
 fi
-
-# FB: Disabled for in image testing #
-#echo -e "\n----------------- Deinstalling the Debian standard kernel packages ------------------\n"
-#apt -q -y purge linux-image-5.10.0*
 
 echo -e "\n----- Add Proxmox repo to APT sources -----\n"
 
